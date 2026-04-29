@@ -9,15 +9,63 @@
  */
 
 import { getLanguageService } from "xml-language-service";
-import { readFileSync } from "fs";
-import { resolve, basename } from "path";
+import { readFileSync, existsSync } from "fs";
+import { resolve, basename, dirname } from "path";
+import { createRequire } from "module";
+import { execSync } from "child_process";
 
 // ─── GitHub context (injected by the Action runner) ─────────────────────────
-const GITHUB_TOKEN   = process.env.GITHUB_TOKEN;
-const REPO           = process.env.GITHUB_REPOSITORY;          // "owner/repo"
-const PR_NUMBER      = Number(process.env.PR_NUMBER);
-const WORKSPACE      = process.env.GITHUB_WORKSPACE ?? ".";
-const HEAD_SHA       = process.env.HEAD_SHA;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const REPO = process.env.GITHUB_REPOSITORY;
+const PR_NUMBER = Number(process.env.PR_NUMBER);
+const WORKSPACE = process.env.GITHUB_WORKSPACE ?? ".";
+const HEAD_SHA = process.env.HEAD_SHA;
+
+// ─── Built-in schema loader ──────────────────────────────────────────────────
+function loadBuiltinSchema(filename) {
+  const require = createRequire(import.meta.url);
+  const pkgRoot = dirname(require.resolve("xml-language-service/package.json"));
+
+  // Try common locations inside the package
+  const candidates = [
+    `${pkgRoot}/dist/resources/default/${filename}`,
+    `${pkgRoot}/resources/default/${filename}`,
+    `${pkgRoot}/src/schema/resources/default/${filename}`,
+    `${pkgRoot}/dist/schema/resources/default/${filename}`,
+  ];
+
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      console.log(`  Found schema at: ${p}`);
+      return readFileSync(p, "utf8");
+    }
+  }
+
+  // Log all XSD files found in the package to help debug
+  console.log(`  Could not find ${filename} — searching package for .xsd files...`);
+  try {
+    const files = execSync(`find ${pkgRoot} -name "*.xsd" 2>/dev/null`).toString().trim();
+    if (files) {
+      console.log(`  Available XSD files:\n${files}`);
+    } else {
+      console.log(`  No .xsd files found in package.`);
+    }
+  } catch { }
+
+  return null;
+}
+
+// ─── Map filename → known schema URI and XSD filename ───────────────────────
+const BUILTIN_SCHEMAS = {
+  "pom.xml": {
+    uri: "builtin://maven-4.0.0.xsd",
+    xsdFile: "maven-4.0.0.xsd",
+  },
+  "web.xml": {
+    uri: "builtin://web-app_3_1.xsd",
+    xsdFile: "web-app_3_1.xsd",
+  },
+};
 
 // ─── Helper: GitHub REST API ─────────────────────────────────────────────────
 async function ghFetch(path, method = "GET", body = undefined) {
@@ -25,7 +73,7 @@ async function ghFetch(path, method = "GET", body = undefined) {
     method,
     headers: {
       Authorization: `Bearer ${GITHUB_TOKEN}`,
-      Accept:        "application/vnd.github+json",
+      Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "Content-Type": "application/json",
     },
@@ -44,14 +92,13 @@ async function getChangedXmlFiles() {
   return files
     .filter(f => f.status !== "removed" && f.filename.endsWith(".xml"))
     .map(f => ({
-      filename: f.filename,             // relative path in repo  e.g. "config/web.xml"
+      filename: f.filename,
       localPath: resolve(WORKSPACE, f.filename),
+      patch: f.patch,
     }));
 }
 
-// ─── Parse diff to map absolute line numbers → diff position ─────────────────
-// GitHub inline comments need a "position" within the diff hunk, NOT a raw line number.
-// This function builds a map: { absoluteLine → diffPosition }.
+// ─── Parse diff hunk → map { absoluteLine → diffPosition } ──────────────────
 function buildLinePositionMap(patch) {
   if (!patch) return {};
   const map = {};
@@ -59,13 +106,12 @@ function buildLinePositionMap(patch) {
   let fileLine = 0;
   for (const line of patch.split("\n")) {
     if (line.startsWith("@@")) {
-      // @@ -a,b +c,d @@ — extract the new-file start line
       const m = line.match(/\+(\d+)/);
       fileLine = m ? Number(m[1]) - 1 : fileLine;
       diffPos++;
       continue;
     }
-    if (line.startsWith("-")) { diffPos++; continue; } // removed line
+    if (line.startsWith("-")) { diffPos++; continue; }
     if (line.startsWith("+") || line.startsWith(" ")) {
       fileLine++;
       diffPos++;
@@ -75,52 +121,26 @@ function buildLinePositionMap(patch) {
   return map;
 }
 
-// ─── Get diff metadata for each file in the PR ───────────────────────────────
-async function getDiffMap() {
-  const files = await ghFetch(`/pulls/${PR_NUMBER}/files`);
-  const map = {};
-  for (const f of files) {
-    map[f.filename] = buildLinePositionMap(f.patch);
-  }
-  return map;
-}
-
-// ─── Delete all previous bot review comments on this PR ──────────────────────
-async function clearPreviousBotComments() {
-  const reviews = await ghFetch(`/pulls/${PR_NUMBER}/reviews`);
-  const botReviews = reviews.filter(r =>
-    r.user?.type === "Bot" || r.body?.includes("<!-- xml-pr-review -->")
-  );
-  for (const r of botReviews) {
-    // Dismiss pending reviews, delete comment-only ones
-    if (r.state === "PENDING") {
-      await ghFetch(`/pulls/${PR_NUMBER}/reviews/${r.id}/dismissals`, "PUT", {
-        message: "Superseded by new review",
-      }).catch(() => {});
-    }
-  }
-}
-
 // ─── Post a PR Review with inline comments ────────────────────────────────────
 async function postReview(comments, summary) {
-  const event = comments.length > 0 ? "REQUEST_CHANGES" : "APPROVE";
+  const event = comments.length > 0 ? "REQUEST_CHANGES" : "COMMENT";
 
   await ghFetch(`/pulls/${PR_NUMBER}/reviews`, "POST", {
     commit_id: HEAD_SHA,
     body: summary,
     event,
     comments: comments.map(c => ({
-      path:     c.path,
-      position: c.position,   // diff position (required by the API)
-      body:     c.body,
+      path: c.path,
+      position: c.position,
+      body: c.body,
     })),
   });
 }
 
-// ─── Format a single diagnostic into a Markdown comment ──────────────────────
+// ─── Format a diagnostic into a Markdown comment ─────────────────────────────
 function formatComment(diag) {
   const icon = diag.severity === "error" ? "🔴" : diag.severity === "warning" ? "🟡" : "🔵";
-  const tag  = diag.source === "syntax" ? "`syntax`" : "`xsd`";
+  const tag = diag.source === "syntax" ? "`syntax`" : "`xsd`";
   return `${icon} **XML ${diag.severity}** (${tag})\n\n${diag.message}`;
 }
 
@@ -137,38 +157,44 @@ async function main() {
     }
 
     console.log(`Reviewing ${changedFiles.length} XML file(s)…`);
-    const diffMap = await getDiffMap();
 
-    let totalErrors   = 0;
+    let totalErrors = 0;
     let totalWarnings = 0;
     const reviewComments = [];
-    const fileSummaries  = [];
+    const fileSummaries = [];
 
-    for (const { filename, localPath } of changedFiles) {
+    for (const { filename, localPath, patch } of changedFiles) {
       let xmlText;
       try {
         xmlText = readFileSync(localPath, "utf8");
       } catch {
-        console.warn(`Could not read ${localPath} — skipping.`);
+        console.warn(`  Could not read ${localPath} — skipping.`);
         continue;
       }
 
-      // Parse (always succeeds, even on broken XML)
       const doc = ls.parseXMLDocument(`file:///${filename}`, xmlText);
-
-      // Auto-resolve schema by filename (pom.xml, web.xml, or custom via addUserAssociation)
-      const schemaInfo = ls.resolveSchemaForDocument(basename(filename));
+      const fileBase = basename(filename);
+      const schemaInfo = BUILTIN_SCHEMAS[fileBase];
 
       let diagnostics = [];
 
       if (schemaInfo) {
         if (!ls.hasSchema(schemaInfo.uri)) {
-          await ls.registerSchema({ uri: schemaInfo.uri, xsdText: schemaInfo.xsdText });
+          const xsdText = loadBuiltinSchema(schemaInfo.xsdFile);
+          if (xsdText) {
+            await ls.registerSchema({ uri: schemaInfo.uri, xsdText });
+          } else {
+            console.log(`  ${filename}: could not load built-in schema, skipping XSD validation`);
+            fileSummaries.push(`⚠️ \`${filename}\` — schema not found, skipped`);
+            continue;
+          }
         }
         diagnostics = await ls.validate(schemaInfo.uri, doc);
-        console.log(`  ${filename}: schema=${schemaInfo.uri}, ${diagnostics.length} diagnostic(s)`);
+        console.log(`  ${filename}: ${diagnostics.length} diagnostic(s)`);
       } else {
-        console.log(`  ${filename}: no schema found, skipping XSD validation`);
+        console.log(`  ${filename}: no built-in schema for "${fileBase}", skipping`);
+        fileSummaries.push(`⚪ \`${filename}\` — no schema, skipped`);
+        continue;
       }
 
       if (diagnostics.length === 0) {
@@ -176,36 +202,33 @@ async function main() {
         continue;
       }
 
-      const linePositionMap = diffMap[filename] ?? {};
-      const errors   = diagnostics.filter(d => d.severity === "error").length;
+      const errors = diagnostics.filter(d => d.severity === "error").length;
       const warnings = diagnostics.filter(d => d.severity === "warning").length;
-      totalErrors   += errors;
+      totalErrors += errors;
       totalWarnings += warnings;
 
-      fileSummaries.push(
-        `❌ \`${filename}\` — ${errors} error(s), ${warnings} warning(s)`
-      );
+      fileSummaries.push(`❌ \`${filename}\` — ${errors} error(s), ${warnings} warning(s)`);
+
+      const linePositionMap = buildLinePositionMap(patch);
 
       for (const diag of diagnostics) {
-        // Diagnostics use 0-based lines; diff positions are 1-based absolute lines
-        const line         = diag.range.start.line + 1;
+        const line = diag.range.start.line + 1;
         const diffPosition = linePositionMap[line];
 
         if (diffPosition == null) {
-          // Line is not in the diff — can't post an inline comment, log only
           console.log(`    [line ${line}] ${diag.severity}: ${diag.message} (not in diff, skipped)`);
           continue;
         }
 
         reviewComments.push({
-          path:     filename,
+          path: filename,
           position: diffPosition,
-          body:     formatComment(diag),
+          body: formatComment(diag),
         });
       }
     }
 
-    // ── Build summary comment ────────────────────────────────────────────────
+    // ── Summary ──────────────────────────────────────────────────────────────
     const summaryHeader = totalErrors + totalWarnings === 0
       ? "## ✅ XML Review — All files valid"
       : `## ❌ XML Review — ${totalErrors} error(s), ${totalWarnings} warning(s) found`;
@@ -221,16 +244,12 @@ async function main() {
         return `| ${rest.join(" ")} | ${icon} |`;
       }),
       "",
-      totalErrors + totalWarnings > 0
-        ? "_Schema validation powered by [xml-language-service](https://www.npmjs.com/package/xml-language-service) (Apache Xerces WASM)._"
-        : "_Validated by [xml-language-service](https://www.npmjs.com/package/xml-language-service)._",
+      "_Powered by [xml-language-service](https://www.npmjs.com/package/xml-language-service) (Apache Xerces WASM)._",
     ].join("\n");
 
     await postReview(reviewComments, summary);
+    console.log(`\nReview posted — ${reviewComments.length} inline comment(s).`);
 
-    console.log(`\nReview posted. ${reviewComments.length} inline comment(s).`);
-
-    // Exit with error code if there are schema errors — fails the CI check
     if (totalErrors > 0) process.exit(1);
 
   } finally {
