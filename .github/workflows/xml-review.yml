@@ -1,0 +1,42 @@
+name: XML PR Review
+
+on:
+  pull_request:
+    paths:
+      - "**/*.xml"   # only runs when XML files are touched
+
+permissions:
+  contents:      read
+  pull-requests: write   # needed to post review comments
+
+jobs:
+  xml-review:
+    name: Validate XML files
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the PR head (so local XML files are available)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # 2. Set up Node.js (xml-language-service requires 18+)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 3. Install only the reviewer script's dependency
+      - name: Install xml-language-service
+        run: npm install xml-language-service
+
+      # 4. Run the reviewer
+      - name: Run XML reviewer
+        env:
+          GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+          PR_NUMBER:          ${{ github.event.pull_request.number }}
+          GITHUB_WORKSPACE:   ${{ github.workspace }}
+          HEAD_SHA:           ${{ github.event.pull_request.head.sha }}
+        run: node src/review.mjs

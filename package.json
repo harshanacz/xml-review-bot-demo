@@ -1,0 +1,12 @@
+{
+    "name": "xml-pr-review-bot",
+    "version": "1.0.0",
+    "description": "GitHub Action that reviews XML files in PRs using xml-language-service",
+    "type": "module",
+    "scripts": {
+        "review": "node src/review.mjs"
+    },
+    "dependencies": {
+        "xml-language-service": "latest"
+    }
+}
