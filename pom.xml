@@ -19,16 +19,13 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
       <version>3.2.0</version>
-      <!-- BROKEN: <scope> is misspelled as <scop> -->
-      <scop>compile</scop>
+      <scope>compile</scope>
     </dependency>
 
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <version>4.13.2</version>
-      <!-- BROKEN: <extraTag> is not valid in a <dependency> -->
-      <extraTag>should-not-be-here</extraTag>
       <scope>test</scope>
     </dependency>
   </dependencies>
