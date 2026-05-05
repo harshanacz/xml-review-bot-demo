@@ -11,6 +11,9 @@
   <version>1.0.0</version>
   <packaging>jar</packaging>
 
+  <!-- ERROR 1: unknown element at project level -->
+  <deployTarget>production</deployTarget>
+
   <name>Demo App</name>
   <description>A sample Maven project</description>
 
@@ -19,16 +22,15 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
       <version>3.2.0</version>
-      <!-- BROKEN: <scope> is misspelled as <scop> -->
-      <scop>compile</scop>
+      <scope>compile</scope>
+      <!-- ERROR 2: unknown element inside <dependency> -->
+      <checksumPolicy>strict</checksumPolicy>
     </dependency>
 
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <version>4.13.2</version>
-      <!-- BROKEN: <extraTag> is not valid in a <dependency> -->
-      <extraTag>should-not-be-here</extraTag>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -42,7 +44,11 @@
         <configuration>
           <source>17</source>
           <target>17</target>
+          <!-- ERROR 3: unknown element inside <configuration> -->
+          <strictMode>true</strictMode>
         </configuration>
+        <!-- ERROR 4: unknown element inside <plugin> -->
+        <phase>compile</phase>
       </plugin>
     </plugins>
   </build>

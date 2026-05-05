@@ -11,7 +11,7 @@
 import { getLanguageService } from "xml-language-service";
 import { readFileSync, existsSync } from "fs";
 import { resolve, basename, dirname } from "path";
-import { createRequire } from "module";
+import { fileURLToPath } from "url";
 import { execSync } from "child_process";
 
 // ─── GitHub context (injected by the Action runner) ─────────────────────────
@@ -23,8 +23,7 @@ const HEAD_SHA = process.env.HEAD_SHA;
 
 // ─── Built-in schema loader ──────────────────────────────────────────────────
 function loadBuiltinSchema(filename) {
-  const require = createRequire(import.meta.url);
-  const pkgRoot = dirname(require.resolve("xml-language-service/package.json"));
+  const pkgRoot = dirname(dirname(fileURLToPath(import.meta.resolve("xml-language-service"))));
 
   // Try common locations inside the package
   const candidates = [
