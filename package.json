@@ -1,12 +1,21 @@
 {
     "name": "xml-pr-review-bot",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "GitHub Action that reviews XML files in PRs using xml-language-service",
     "type": "module",
+    "engines": {
+        "node": ">=18"
+    },
     "scripts": {
-        "review": "node src/review.mjs"
+        "review": "node src/review.mjs",
+        "check": "node src/review.mjs --local pom.xml",
+        "test": "node --test test/*.test.mjs"
     },
     "dependencies": {
-        "xml-language-service": "latest"
+        "xerces-wasm": "^2.0.2",
+        "xml-language-service": "^1.1.0"
+    },
+    "overrides": {
+        "xerces-wasm": "$xerces-wasm"
     }
 }

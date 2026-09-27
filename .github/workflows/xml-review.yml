@@ -3,16 +3,26 @@ name: XML PR Review
 on:
   pull_request:
     paths:
-      - "**/*.xml"   # only runs when XML files are touched
+      - "**/*.xml"             # run when XML files are touched
+      - ".xml-review.json"     # or the bot config / code changes
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
 
 permissions:
   contents:      read
   pull-requests: write   # needed to post review comments
 
+# A new push to the PR cancels the review of the previous commit.
+concurrency:
+  group: xml-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   xml-review:
     name: Validate XML files
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       # 1. Check out the PR head (so local XML files are available)
@@ -21,17 +31,23 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      # 2. Set up Node.js (xml-language-service requires 18+)
+      # 2. Set up Node.js with npm cache
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
+          cache: npm
 
-      # 3. Install only the reviewer script's dependency
-      - name: Install xml-language-service
-        run: npm install xml-language-service
+      # 3. Reproducible install from the lockfile
+      #    (xml-language-service + xerces-wasm 2.x)
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
 
-      # 4. Run the reviewer
+      # 4. Make sure the reviewer itself works before trusting its verdict
+      - name: Self-test
+        run: npm test
+
+      # 5. Run the reviewer
       - name: Run XML reviewer
         env:
           GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
